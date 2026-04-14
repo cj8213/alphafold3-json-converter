@@ -23,6 +23,19 @@ from pathlib import Path
 REQUIRED_TOP_LEVEL = ["name", "sequences"]
 REQUIRED_SEQUENCE_TYPES = {"protein", "rna", "dna", "ligand", "ion"}
 
+# ---------------------------------------------------------------------------
+# VRAM estimation constants
+# Calibration point (GitHub Issue #341): 5,746 tokens crashed an 80 GB H100.
+# Formula: VRAM(GB) = k * tokens^2  →  k = 80 / 5746^2 ≈ 2.424e-6
+# ---------------------------------------------------------------------------
+VRAM_K: float = 80.0 / (5746 ** 2)
+
+GPU_TIERS: list[tuple[float, str, str]] = [
+    (80.0, "OOM LIKELY", "H100 / A100 80G"),
+    (40.0, "DANGEROUS",  "A100 40G"),
+    (24.0, "RISKY",      "RTX 3090 / 4090"),
+]
+
 
 def error(msg: str) -> None:
     print(f"  [ERROR] {msg}", file=sys.stderr)
@@ -34,6 +47,50 @@ def warn(msg: str) -> None:
 
 def info(msg: str) -> None:
     print(f"  [OK]    {msg}")
+
+
+# ---------------------------------------------------------------------------
+# VRAM estimation
+# ---------------------------------------------------------------------------
+
+
+def estimate_vram(entry: dict) -> tuple[int, float]:
+    """
+    Count total tokens (sum of all 'sequence' field lengths in the entry)
+    and return (total_tokens, estimated_vram_gb) using the quadratic formula:
+
+        VRAM(GB) = VRAM_K * tokens^2
+    """
+    total_tokens = 0
+    for seq_wrapper in entry.get("sequences", []):
+        if not isinstance(seq_wrapper, dict):
+            continue
+        for seq_type in ("protein", "rna", "dna"):
+            if seq_type in seq_wrapper:
+                inner = seq_wrapper[seq_type]
+                if isinstance(inner, dict) and isinstance(inner.get("sequence"), str):
+                    total_tokens += len(inner["sequence"])
+    vram_gb = VRAM_K * (total_tokens ** 2)
+    return total_tokens, vram_gb
+
+
+def print_vram_report(entry_name: str, tokens: int, vram_gb: float) -> None:
+    """Print the Hardware Compatibility report for one entry."""
+    print(f"  {'─' * 40}")
+    print(f"  Hardware Compatibility — '{entry_name}'")
+    print(f"    Total tokens   : {tokens:,}")
+    print(f"    Estimated VRAM : {vram_gb:.1f} GB")
+
+    flagged = False
+    for threshold, label, gpu_name in GPU_TIERS:
+        if vram_gb > threshold:
+            print(f"    [{label}] Exceeds {threshold:.0f} GB ({gpu_name})")
+            flagged = True
+            break  # report only the highest-severity tier hit
+
+    if not flagged:
+        print(f"    [SAFE] Within 24 GB GPU limits")
+    print(f"  {'─' * 40}")
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +287,11 @@ def convert_entry(raw: dict, idx: int) -> dict | None:
         return None
 
     info(f"Entry '{entry_name}' converted successfully")
+
+    # 4. VRAM estimation (uses the normalised sequences already in `entry`)
+    tokens, vram_gb = estimate_vram(entry)
+    print_vram_report(entry_name, tokens, vram_gb)
+
     return entry
 
 

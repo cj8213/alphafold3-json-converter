@@ -6,3 +6,5 @@ This lightweight Python script automatically normalizes your server exports to m
 
 **Usage:**
 `python af3_convert.py your_server_export.json`
+
+Now includes a VRAM Oracle that predicts OOM (Out of Memory) crashes based on quadratic token scaling before you run JAX.
